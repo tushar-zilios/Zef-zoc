@@ -1,0 +1,5 @@
+.env
+zoc-server
+logs/
+server
+.env.production

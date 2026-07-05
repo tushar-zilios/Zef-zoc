@@ -1,0 +1,12 @@
+services:
+  zef-zoc:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: asia-south2-docker.pkg.dev/bhanshu/zef/zoc:latest
+    container_name: zef-zoc
+    ports:
+      - "8086:8086"
+    env_file:
+      - .env
+    restart: unless-stopped
