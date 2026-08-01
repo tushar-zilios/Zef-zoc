@@ -3,3 +3,4 @@ zoc-server
 logs/
 server
 .env.production
+.env.development

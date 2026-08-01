@@ -12,3 +12,13 @@ type ShareLink struct {
 	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
 	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
 }
+
+// DocumentShare grants a specific user standing access to a document,
+// as opposed to ShareLink which grants access to anyone holding the token.
+type DocumentShare struct {
+	DocumentID string    `json:"document_id"`
+	UserID     string    `json:"user_id"`
+	Permission string    `json:"permission"`
+	CreatedBy  string    `json:"created_by"`
+	CreatedAt  time.Time `json:"created_at"`
+}

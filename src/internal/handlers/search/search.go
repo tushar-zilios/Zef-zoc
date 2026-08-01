@@ -17,7 +17,8 @@ func SearchHandler(w http.ResponseWriter, r *http.Request) {
 	folderID := r.URL.Query().Get("folder")
 	tagID := r.URL.Query().Get("tag")
 
-	list, err := dbdocument.Search(r.Context(), q, folderID, tagID)
+	userID, _ := r.Context().Value("user_id").(string)
+	list, err := dbdocument.Search(r.Context(), q, folderID, tagID, userID)
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, "Search failed: "+err.Error())
 		return

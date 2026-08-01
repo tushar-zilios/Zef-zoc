@@ -10,6 +10,7 @@ import (
 	dbchunk "zoc/src/internal/db/chunk"
 	dbdocument "zoc/src/internal/db/document"
 	dblink "zoc/src/internal/db/link"
+	shareHandlers "zoc/src/internal/handlers/share"
 	"zoc/src/internal/logger"
 	models "zoc/src/internal/models/chunk"
 	"zoc/src/internal/utils"
@@ -23,6 +24,11 @@ type saveContentRequest struct {
 
 func GetDocumentContentHandler(w http.ResponseWriter, r *http.Request) {
 	documentID := chi.URLParam(r, "id")
+	userID, _ := r.Context().Value("user_id").(string)
+	if ok, _ := shareHandlers.CanAccessDocument(r, documentID, userID); !ok {
+		utils.WriteError(w, http.StatusNotFound, "Document not found")
+		return
+	}
 	chunks, err := dbchunk.ListChunks(r.Context(), documentID)
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to list chunks: "+err.Error())
@@ -36,6 +42,17 @@ func GetDocumentContentHandler(w http.ResponseWriter, r *http.Request) {
 
 func SaveDocumentContentHandler(w http.ResponseWriter, r *http.Request) {
 	documentID := chi.URLParam(r, "id")
+	requesterID, _ := r.Context().Value("user_id").(string)
+	ok, permission := shareHandlers.CanAccessDocument(r, documentID, requesterID)
+	if !ok {
+		utils.WriteError(w, http.StatusNotFound, "Document not found")
+		return
+	}
+	if permission != "owner" && permission != "edit" {
+		utils.WriteError(w, http.StatusForbidden, "You do not have edit access to this document")
+		return
+	}
+
 	var req saveContentRequest
 	if err := utils.ReadJSON(r, &req); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, "Invalid request body")
@@ -124,7 +141,7 @@ func applyContentSideEffects(r *http.Request, documentID string, chunks []models
 		}
 		mentions = append(mentions, models.ExtractMentionIDs(c.Content)...)
 	}
-	_ = dbdocument.UpdateSearchText(ctx, documentID, strings.Join(texts, " "))
+	_ = dbdocument.UpdateSearchText(ctx, documentID, strings.Join(texts, " "), userID)
 	_ = dblink.ReplaceOutgoingLinks(ctx, documentID, mentions)
 
 	if chunksJSON, err := json.Marshal(chunks); err == nil {

@@ -128,8 +128,9 @@ func ListStarredDocumentsHandler(w http.ResponseWriter, r *http.Request) {
 
 func resolveDocs(r *http.Request, ids []string) []modelsdoc.Document {
 	docs := []modelsdoc.Document{}
+	userID, _ := r.Context().Value("user_id").(string)
 	for _, id := range ids {
-		d, err := dbdocument.GetDocument(r.Context(), id)
+		d, err := dbdocument.GetDocument(r.Context(), id, userID)
 		if err == nil && d.DeletedAt == nil {
 			docs = append(docs, *d)
 		}

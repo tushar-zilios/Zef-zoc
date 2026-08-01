@@ -19,7 +19,8 @@ import (
 func ExportMarkdownHandler(w http.ResponseWriter, r *http.Request) {
 	documentID := chi.URLParam(r, "id")
 
-	d, err := dbdocument.GetDocument(r.Context(), documentID)
+	userID, _ := r.Context().Value("user_id").(string)
+	d, err := dbdocument.GetDocument(r.Context(), documentID, userID)
 	if err != nil {
 		utils.WriteError(w, http.StatusNotFound, "Document not found")
 		return

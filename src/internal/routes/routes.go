@@ -27,6 +27,7 @@ func NewRouter() http.Handler {
 	r.Use(conditionalLogger)
 	r.Use(handlerLogger)
 	r.Use(middleware.Recoverer)
+	r.Use(requestTimeout)
 
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 
@@ -94,6 +95,10 @@ func NewRouter() http.Handler {
 		r.Post("/{id}/share", shareHandlers.CreateShareLinkHandler)
 		r.Get("/{id}/share", shareHandlers.ListShareLinksHandler)
 		r.Delete("/{id}/share/{token}", shareHandlers.RevokeShareLinkHandler)
+
+		r.Post("/{id}/shares", shareHandlers.ShareDocumentWithUserHandler)
+		r.Get("/{id}/shares", shareHandlers.ListDocumentSharesHandler)
+		r.Delete("/{id}/shares/{userId}", shareHandlers.RemoveDocumentShareHandler)
 
 		r.Post("/{id}/summarize", aiHandlers.SummarizeDocumentHandler)
 		r.Post("/{id}/ask", aiHandlers.AskDocumentHandler)

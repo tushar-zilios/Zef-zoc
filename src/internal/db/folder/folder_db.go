@@ -18,7 +18,7 @@ func CreateFolder(ctx context.Context, parentID *string, name, createdBy string)
 
 	var parentPath string
 	if parentID != nil {
-		if err := pool.QueryRow(ctx, `SELECT path FROM public.folders WHERE folder_id = $1`, *parentID).Scan(&parentPath); err != nil {
+		if err := pool.QueryRow(ctx, `SELECT path FROM public.folders WHERE folder_id = $1 AND created_by = $2`, *parentID, createdBy).Scan(&parentPath); err != nil {
 			return nil, fmt.Errorf("failed to resolve parent folder: %w", err)
 		}
 	}
@@ -52,7 +52,7 @@ func scanFolder(row pgx.Row) (*models.Folder, error) {
 	return f, nil
 }
 
-func ListFolders(ctx context.Context, parentID *string) ([]models.Folder, error) {
+func ListFolders(ctx context.Context, parentID *string, userID string) ([]models.Folder, error) {
 	pool := dbpkg.GetZocPoolOrNil()
 	if pool == nil {
 		return nil, fmt.Errorf("database not configured")
@@ -63,11 +63,11 @@ func ListFolders(ctx context.Context, parentID *string) ([]models.Folder, error)
 	if parentID != nil {
 		rows, err = pool.Query(ctx, `
 			SELECT `+folderCols+`
-			FROM public.folders WHERE parent_id = $1 AND deleted_at IS NULL ORDER BY name`, *parentID)
+			FROM public.folders WHERE parent_id = $1 AND created_by = $2 AND deleted_at IS NULL ORDER BY name`, *parentID, userID)
 	} else {
 		rows, err = pool.Query(ctx, `
 			SELECT `+folderCols+`
-			FROM public.folders WHERE parent_id IS NULL AND deleted_at IS NULL ORDER BY name`)
+			FROM public.folders WHERE parent_id IS NULL AND created_by = $1 AND deleted_at IS NULL ORDER BY name`, userID)
 	}
 	if err != nil {
 		return nil, err
@@ -85,50 +85,50 @@ func ListFolders(ctx context.Context, parentID *string) ([]models.Folder, error)
 	return list, rows.Err()
 }
 
-func GetFolder(ctx context.Context, folderID string) (*models.Folder, error) {
+func GetFolder(ctx context.Context, folderID, userID string) (*models.Folder, error) {
 	pool := dbpkg.GetZocPoolOrNil()
 	if pool == nil {
 		return nil, fmt.Errorf("database not configured")
 	}
-	row := pool.QueryRow(ctx, `SELECT `+folderCols+` FROM public.folders WHERE folder_id = $1`, folderID)
+	row := pool.QueryRow(ctx, `SELECT `+folderCols+` FROM public.folders WHERE folder_id = $1 AND created_by = $2`, folderID, userID)
 	return scanFolder(row)
 }
 
-func RenameFolder(ctx context.Context, folderID, name string) error {
+func RenameFolder(ctx context.Context, folderID, name, userID string) error {
 	pool := dbpkg.GetZocPoolOrNil()
 	if pool == nil {
 		return fmt.Errorf("database not configured")
 	}
-	_, err := pool.Exec(ctx, `UPDATE public.folders SET name = $1, updated_at = NOW() WHERE folder_id = $2`, name, folderID)
+	_, err := pool.Exec(ctx, `UPDATE public.folders SET name = $1, updated_at = NOW() WHERE folder_id = $2 AND created_by = $3`, name, folderID, userID)
 	return err
 }
 
-func MoveFolder(ctx context.Context, folderID string, parentID *string) error {
+func MoveFolder(ctx context.Context, folderID string, parentID *string, userID string) error {
 	pool := dbpkg.GetZocPoolOrNil()
 	if pool == nil {
 		return fmt.Errorf("database not configured")
 	}
-	_, err := pool.Exec(ctx, `UPDATE public.folders SET parent_id = $1, updated_at = NOW() WHERE folder_id = $2`, parentID, folderID)
+	_, err := pool.Exec(ctx, `UPDATE public.folders SET parent_id = $1, updated_at = NOW() WHERE folder_id = $2 AND created_by = $3`, parentID, folderID, userID)
 	return err
 }
 
 // SoftDeleteFolder marks a folder (and its direct document children) as
 // deleted. Nested subfolders/documents follow on their own restore/delete calls.
-func SoftDeleteFolder(ctx context.Context, folderID string) error {
+func SoftDeleteFolder(ctx context.Context, folderID, userID string) error {
 	pool := dbpkg.GetZocPoolOrNil()
 	if pool == nil {
 		return fmt.Errorf("database not configured")
 	}
-	_, err := pool.Exec(ctx, `UPDATE public.folders SET deleted_at = NOW() WHERE folder_id = $1`, folderID)
+	_, err := pool.Exec(ctx, `UPDATE public.folders SET deleted_at = NOW() WHERE folder_id = $1 AND created_by = $2`, folderID, userID)
 	return err
 }
 
-func RestoreFolder(ctx context.Context, folderID string) error {
+func RestoreFolder(ctx context.Context, folderID, userID string) error {
 	pool := dbpkg.GetZocPoolOrNil()
 	if pool == nil {
 		return fmt.Errorf("database not configured")
 	}
-	_, err := pool.Exec(ctx, `UPDATE public.folders SET deleted_at = NULL WHERE folder_id = $1`, folderID)
+	_, err := pool.Exec(ctx, `UPDATE public.folders SET deleted_at = NULL WHERE folder_id = $1 AND created_by = $2`, folderID, userID)
 	return err
 }
 
@@ -156,11 +156,11 @@ func ListTrashedFolders(ctx context.Context, userID string) ([]models.Folder, er
 
 // DeleteFolder permanently removes a folder (hard delete), for use once
 // something is already in trash and the user empties it.
-func DeleteFolder(ctx context.Context, folderID string) error {
+func DeleteFolder(ctx context.Context, folderID, userID string) error {
 	pool := dbpkg.GetZocPoolOrNil()
 	if pool == nil {
 		return fmt.Errorf("database not configured")
 	}
-	_, err := pool.Exec(ctx, `DELETE FROM public.folders WHERE folder_id = $1`, folderID)
+	_, err := pool.Exec(ctx, `DELETE FROM public.folders WHERE folder_id = $1 AND created_by = $2`, folderID, userID)
 	return err
 }

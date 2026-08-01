@@ -20,6 +20,17 @@ func scanDoc(row pgx.Row) (*models.Document, error) {
 	return d, nil
 }
 
+// GetDocumentByID fetches a document regardless of owner. Callers must
+// separately authorize the requester (owner check or document_shares lookup).
+func GetDocumentByID(ctx context.Context, documentID string) (*models.Document, error) {
+	pool := dbpkg.GetZocPoolOrNil()
+	if pool == nil {
+		return nil, fmt.Errorf("database not configured")
+	}
+	row := pool.QueryRow(ctx, `SELECT `+docCols+` FROM public.documents WHERE document_id = $1`, documentID)
+	return scanDoc(row)
+}
+
 func CreateDocument(ctx context.Context, folderID *string, name, mimeType string, sizeBytes int64, storageKey, checksum, createdBy string) (*models.Document, error) {
 	pool := dbpkg.GetZocPoolOrNil()
 	if pool == nil {
@@ -47,7 +58,7 @@ func CreateDocument(ctx context.Context, folderID *string, name, mimeType string
 	return d, nil
 }
 
-func ListDocuments(ctx context.Context, folderID *string) ([]models.Document, error) {
+func ListDocuments(ctx context.Context, folderID *string, userID string) ([]models.Document, error) {
 	pool := dbpkg.GetZocPoolOrNil()
 	if pool == nil {
 		return nil, fmt.Errorf("database not configured")
@@ -58,11 +69,11 @@ func ListDocuments(ctx context.Context, folderID *string) ([]models.Document, er
 	if folderID != nil {
 		rows, err = pool.Query(ctx, `
 			SELECT `+docCols+`
-			FROM public.documents WHERE folder_id = $1 AND deleted_at IS NULL ORDER BY name`, *folderID)
+			FROM public.documents WHERE folder_id = $1 AND created_by = $2 AND deleted_at IS NULL ORDER BY name`, *folderID, userID)
 	} else {
 		rows, err = pool.Query(ctx, `
 			SELECT `+docCols+`
-			FROM public.documents WHERE folder_id IS NULL AND deleted_at IS NULL ORDER BY name`)
+			FROM public.documents WHERE folder_id IS NULL AND created_by = $1 AND deleted_at IS NULL ORDER BY name`, userID)
 	}
 	if err != nil {
 		return nil, err
@@ -80,12 +91,12 @@ func ListDocuments(ctx context.Context, folderID *string) ([]models.Document, er
 	return list, rows.Err()
 }
 
-func GetDocument(ctx context.Context, documentID string) (*models.Document, error) {
+func GetDocument(ctx context.Context, documentID, userID string) (*models.Document, error) {
 	pool := dbpkg.GetZocPoolOrNil()
 	if pool == nil {
 		return nil, fmt.Errorf("database not configured")
 	}
-	row := pool.QueryRow(ctx, `SELECT `+docCols+` FROM public.documents WHERE document_id = $1`, documentID)
+	row := pool.QueryRow(ctx, `SELECT `+docCols+` FROM public.documents WHERE document_id = $1 AND created_by = $2`, documentID, userID)
 	return scanDoc(row)
 }
 
@@ -97,7 +108,7 @@ func UpdateDocument(ctx context.Context, documentID string, name *string, folder
 		return nil, fmt.Errorf("database not configured")
 	}
 
-	existing, err := GetDocument(ctx, documentID)
+	existing, err := GetDocument(ctx, documentID, updatedBy)
 	if err != nil {
 		return nil, err
 	}
@@ -129,9 +140,9 @@ func UpdateDocument(ctx context.Context, documentID string, name *string, folder
 	row := pool.QueryRow(ctx, `
 		UPDATE public.documents
 		SET name = $1, folder_id = $2, version = $3, storage_key = $4, checksum = $5, size_bytes = $6, updated_by = $7, updated_at = NOW()
-		WHERE document_id = $8
+		WHERE document_id = $8 AND created_by = $9
 		RETURNING `+docCols,
-		newName, newFolderID, newVersion, newStorageKey, newChecksum, newSize, updatedBy, documentID)
+		newName, newFolderID, newVersion, newStorageKey, newChecksum, newSize, updatedBy, documentID, updatedBy)
 	d, err := scanDoc(row)
 	if err != nil {
 		return nil, err
@@ -149,21 +160,21 @@ func UpdateDocument(ctx context.Context, documentID string, name *string, folder
 	return d, nil
 }
 
-func SoftDeleteDocument(ctx context.Context, documentID string) error {
+func SoftDeleteDocument(ctx context.Context, documentID, userID string) error {
 	pool := dbpkg.GetZocPoolOrNil()
 	if pool == nil {
 		return fmt.Errorf("database not configured")
 	}
-	_, err := pool.Exec(ctx, `UPDATE public.documents SET deleted_at = NOW() WHERE document_id = $1`, documentID)
+	_, err := pool.Exec(ctx, `UPDATE public.documents SET deleted_at = NOW() WHERE document_id = $1 AND created_by = $2`, documentID, userID)
 	return err
 }
 
-func RestoreDocument(ctx context.Context, documentID string) error {
+func RestoreDocument(ctx context.Context, documentID, userID string) error {
 	pool := dbpkg.GetZocPoolOrNil()
 	if pool == nil {
 		return fmt.Errorf("database not configured")
 	}
-	_, err := pool.Exec(ctx, `UPDATE public.documents SET deleted_at = NULL WHERE document_id = $1`, documentID)
+	_, err := pool.Exec(ctx, `UPDATE public.documents SET deleted_at = NULL WHERE document_id = $1 AND created_by = $2`, documentID, userID)
 	return err
 }
 
@@ -189,16 +200,16 @@ func ListTrashedDocuments(ctx context.Context, userID string) ([]models.Document
 	return list, rows.Err()
 }
 
-func SetArchived(ctx context.Context, documentID string, archived bool) (*models.Document, error) {
+func SetArchived(ctx context.Context, documentID, userID string, archived bool) (*models.Document, error) {
 	pool := dbpkg.GetZocPoolOrNil()
 	if pool == nil {
 		return nil, fmt.Errorf("database not configured")
 	}
 	var row pgx.Row
 	if archived {
-		row = pool.QueryRow(ctx, `UPDATE public.documents SET archived_at = NOW() WHERE document_id = $1 RETURNING `+docCols, documentID)
+		row = pool.QueryRow(ctx, `UPDATE public.documents SET archived_at = NOW() WHERE document_id = $1 AND created_by = $2 RETURNING `+docCols, documentID, userID)
 	} else {
-		row = pool.QueryRow(ctx, `UPDATE public.documents SET archived_at = NULL WHERE document_id = $1 RETURNING `+docCols, documentID)
+		row = pool.QueryRow(ctx, `UPDATE public.documents SET archived_at = NULL WHERE document_id = $1 AND created_by = $2 RETURNING `+docCols, documentID, userID)
 	}
 	return scanDoc(row)
 }
@@ -211,7 +222,7 @@ func DuplicateDocument(ctx context.Context, documentID, requestedBy string) (*mo
 		return nil, fmt.Errorf("database not configured")
 	}
 
-	src, err := GetDocument(ctx, documentID)
+	src, err := GetDocument(ctx, documentID, requestedBy)
 	if err != nil {
 		return nil, err
 	}
@@ -252,24 +263,26 @@ func DuplicateDocument(ctx context.Context, documentID, requestedBy string) (*mo
 	return dst, nil
 }
 
-func BulkMoveDocuments(ctx context.Context, documentIDs []string, folderID *string) error {
+func BulkMoveDocuments(ctx context.Context, documentIDs []string, folderID *string, userID string) error {
 	pool := dbpkg.GetZocPoolOrNil()
 	if pool == nil {
 		return fmt.Errorf("database not configured")
 	}
-	_, err := pool.Exec(ctx, `UPDATE public.documents SET folder_id = $1, updated_at = NOW() WHERE document_id = ANY($2)`, folderID, documentIDs)
+	_, err := pool.Exec(ctx, `UPDATE public.documents SET folder_id = $1, updated_at = NOW() WHERE document_id = ANY($2) AND created_by = $3`, folderID, documentIDs, userID)
 	return err
 }
 
-func ListDocumentVersions(ctx context.Context, documentID string) ([]models.DocumentVersion, error) {
+func ListDocumentVersions(ctx context.Context, documentID, userID string) ([]models.DocumentVersion, error) {
 	pool := dbpkg.GetZocPoolOrNil()
 	if pool == nil {
 		return nil, fmt.Errorf("database not configured")
 	}
 
 	rows, err := pool.Query(ctx, `
-		SELECT version_id, document_id, version, storage_key, size_bytes, checksum, created_by, created_at, chunks_snapshot
-		FROM public.zoc_document_versions WHERE document_id = $1 ORDER BY version DESC`, documentID)
+		SELECT v.version_id, v.document_id, v.version, v.storage_key, v.size_bytes, v.checksum, v.created_by, v.created_at, v.chunks_snapshot
+		FROM public.zoc_document_versions v
+		JOIN public.documents d ON d.document_id = v.document_id
+		WHERE v.document_id = $1 AND d.created_by = $2 ORDER BY v.version DESC`, documentID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -286,15 +299,17 @@ func ListDocumentVersions(ctx context.Context, documentID string) ([]models.Docu
 	return list, rows.Err()
 }
 
-func GetDocumentVersion(ctx context.Context, documentID string, version int) (*models.DocumentVersion, error) {
+func GetDocumentVersion(ctx context.Context, documentID string, version int, userID string) (*models.DocumentVersion, error) {
 	pool := dbpkg.GetZocPoolOrNil()
 	if pool == nil {
 		return nil, fmt.Errorf("database not configured")
 	}
 	var v models.DocumentVersion
 	row := pool.QueryRow(ctx, `
-		SELECT version_id, document_id, version, storage_key, size_bytes, checksum, created_by, created_at, chunks_snapshot
-		FROM public.zoc_document_versions WHERE document_id = $1 AND version = $2`, documentID, version)
+		SELECT v.version_id, v.document_id, v.version, v.storage_key, v.size_bytes, v.checksum, v.created_by, v.created_at, v.chunks_snapshot
+		FROM public.zoc_document_versions v
+		JOIN public.documents d ON d.document_id = v.document_id
+		WHERE v.document_id = $1 AND v.version = $2 AND d.created_by = $3`, documentID, version, userID)
 	if err := row.Scan(&v.VersionID, &v.DocumentID, &v.Version, &v.StorageKey, &v.SizeBytes, &v.Checksum, &v.CreatedBy, &v.CreatedAt, &v.ChunksSnapshot); err != nil {
 		return nil, err
 	}
@@ -328,23 +343,23 @@ func SnapshotChunksVersion(ctx context.Context, documentID string, chunksJSON []
 
 // UpdateSearchText refreshes the denormalized search_text column used by the
 // generated search_tsv column, rolled up from chunk plain text.
-func UpdateSearchText(ctx context.Context, documentID, text string) error {
+func UpdateSearchText(ctx context.Context, documentID, text, userID string) error {
 	pool := dbpkg.GetZocPoolOrNil()
 	if pool == nil {
 		return fmt.Errorf("database not configured")
 	}
-	_, err := pool.Exec(ctx, `UPDATE public.documents SET search_text = $1 WHERE document_id = $2`, text, documentID)
+	_, err := pool.Exec(ctx, `UPDATE public.documents SET search_text = $1 WHERE document_id = $2 AND created_by = $3`, text, documentID, userID)
 	return err
 }
 
-func Search(ctx context.Context, query, folderID, tagID string) ([]models.Document, error) {
+func Search(ctx context.Context, query, folderID, tagID, userID string) ([]models.Document, error) {
 	pool := dbpkg.GetZocPoolOrNil()
 	if pool == nil {
 		return nil, fmt.Errorf("database not configured")
 	}
 
-	sql := `SELECT ` + docCols + ` FROM public.documents d WHERE deleted_at IS NULL AND search_tsv @@ plainto_tsquery('english', $1)`
-	args := []any{query}
+	sql := `SELECT ` + docCols + ` FROM public.documents d WHERE deleted_at IS NULL AND created_by = $1 AND search_tsv @@ plainto_tsquery('english', $2)`
+	args := []any{userID, query}
 	if folderID != "" {
 		args = append(args, folderID)
 		sql += fmt.Sprintf(" AND folder_id = $%d", len(args))
@@ -353,7 +368,7 @@ func Search(ctx context.Context, query, folderID, tagID string) ([]models.Docume
 		args = append(args, tagID)
 		sql += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM public.document_tags dt WHERE dt.document_id = d.document_id AND dt.tag_id = $%d)", len(args))
 	}
-	sql += " ORDER BY ts_rank(search_tsv, plainto_tsquery('english', $1)) DESC LIMIT 50"
+	sql += " ORDER BY ts_rank(search_tsv, plainto_tsquery('english', $2)) DESC LIMIT 50"
 
 	rows, err := pool.Query(ctx, sql, args...)
 	if err != nil {
@@ -372,12 +387,12 @@ func Search(ctx context.Context, query, folderID, tagID string) ([]models.Docume
 	return list, rows.Err()
 }
 
-func SetIsTemplate(ctx context.Context, documentID string, isTemplate bool) error {
+func SetIsTemplate(ctx context.Context, documentID string, isTemplate bool, userID string) error {
 	pool := dbpkg.GetZocPoolOrNil()
 	if pool == nil {
 		return fmt.Errorf("database not configured")
 	}
-	_, err := pool.Exec(ctx, `UPDATE public.documents SET is_template = $1 WHERE document_id = $2`, isTemplate, documentID)
+	_, err := pool.Exec(ctx, `UPDATE public.documents SET is_template = $1 WHERE document_id = $2 AND created_by = $3`, isTemplate, documentID, userID)
 	return err
 }
 

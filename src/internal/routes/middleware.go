@@ -29,6 +29,21 @@ func handlerLogger(next http.Handler) http.Handler {
 	})
 }
 
+// requestTimeout bounds how long a request can wait on downstream work (e.g. a
+// pgxpool connection acquire) before failing fast, so pool exhaustion under
+// concurrent load returns quickly instead of hanging the client forever.
+func requestTimeout(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer cancel()
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
 func JWTMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var rawToken string

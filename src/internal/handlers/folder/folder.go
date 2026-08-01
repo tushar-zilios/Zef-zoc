@@ -43,8 +43,9 @@ func ListFoldersHandler(w http.ResponseWriter, r *http.Request) {
 	if v := r.URL.Query().Get("parent_id"); v != "" {
 		parentID = &v
 	}
+	userID, _ := r.Context().Value("user_id").(string)
 
-	list, err := dbfolder.ListFolders(r.Context(), parentID)
+	list, err := dbfolder.ListFolders(r.Context(), parentID, userID)
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to list folders: "+err.Error())
 		return
@@ -57,7 +58,8 @@ func ListFoldersHandler(w http.ResponseWriter, r *http.Request) {
 
 func GetFolderHandler(w http.ResponseWriter, r *http.Request) {
 	folderID := chi.URLParam(r, "id")
-	f, err := dbfolder.GetFolder(r.Context(), folderID)
+	userID, _ := r.Context().Value("user_id").(string)
+	f, err := dbfolder.GetFolder(r.Context(), folderID, userID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			utils.WriteError(w, http.StatusNotFound, "Folder not found")
@@ -75,17 +77,22 @@ type updateFolderRequest struct {
 
 func UpdateFolderHandler(w http.ResponseWriter, r *http.Request) {
 	folderID := chi.URLParam(r, "id")
+	userID, _ := r.Context().Value("user_id").(string)
 	var req updateFolderRequest
 	if err := utils.ReadJSON(r, &req); err != nil || req.Name == "" {
 		utils.WriteError(w, http.StatusBadRequest, "name is required")
 		return
 	}
-	if err := dbfolder.RenameFolder(r.Context(), folderID, req.Name); err != nil {
+	if err := dbfolder.RenameFolder(r.Context(), folderID, req.Name, userID); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to rename folder: "+err.Error())
 		return
 	}
-	f, err := dbfolder.GetFolder(r.Context(), folderID)
+	f, err := dbfolder.GetFolder(r.Context(), folderID, userID)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			utils.WriteError(w, http.StatusNotFound, "Folder not found")
+			return
+		}
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to fetch updated folder: "+err.Error())
 		return
 	}
@@ -98,17 +105,22 @@ type moveFolderRequest struct {
 
 func MoveFolderHandler(w http.ResponseWriter, r *http.Request) {
 	folderID := chi.URLParam(r, "id")
+	userID, _ := r.Context().Value("user_id").(string)
 	var req moveFolderRequest
 	if err := utils.ReadJSON(r, &req); err != nil {
 		utils.WriteError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	if err := dbfolder.MoveFolder(r.Context(), folderID, req.ParentID); err != nil {
+	if err := dbfolder.MoveFolder(r.Context(), folderID, req.ParentID, userID); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to move folder: "+err.Error())
 		return
 	}
-	f, err := dbfolder.GetFolder(r.Context(), folderID)
+	f, err := dbfolder.GetFolder(r.Context(), folderID, userID)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			utils.WriteError(w, http.StatusNotFound, "Folder not found")
+			return
+		}
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to fetch moved folder: "+err.Error())
 		return
 	}
@@ -118,7 +130,8 @@ func MoveFolderHandler(w http.ResponseWriter, r *http.Request) {
 // DeleteFolderHandler soft-deletes, matching document trash behavior.
 func DeleteFolderHandler(w http.ResponseWriter, r *http.Request) {
 	folderID := chi.URLParam(r, "id")
-	if err := dbfolder.SoftDeleteFolder(r.Context(), folderID); err != nil {
+	userID, _ := r.Context().Value("user_id").(string)
+	if err := dbfolder.SoftDeleteFolder(r.Context(), folderID, userID); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to delete folder: "+err.Error())
 		return
 	}
@@ -127,12 +140,17 @@ func DeleteFolderHandler(w http.ResponseWriter, r *http.Request) {
 
 func RestoreFolderHandler(w http.ResponseWriter, r *http.Request) {
 	folderID := chi.URLParam(r, "id")
-	if err := dbfolder.RestoreFolder(r.Context(), folderID); err != nil {
+	userID, _ := r.Context().Value("user_id").(string)
+	if err := dbfolder.RestoreFolder(r.Context(), folderID, userID); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to restore folder: "+err.Error())
 		return
 	}
-	f, err := dbfolder.GetFolder(r.Context(), folderID)
+	f, err := dbfolder.GetFolder(r.Context(), folderID, userID)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			utils.WriteError(w, http.StatusNotFound, "Folder not found")
+			return
+		}
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to fetch restored folder: "+err.Error())
 		return
 	}

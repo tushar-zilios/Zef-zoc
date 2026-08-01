@@ -11,6 +11,7 @@ import (
 	dbdocument "zoc/src/internal/db/document"
 	dblink "zoc/src/internal/db/link"
 	dbtag "zoc/src/internal/db/tag"
+	shareHandlers "zoc/src/internal/handlers/share"
 	modelschunk "zoc/src/internal/models/chunk"
 	models "zoc/src/internal/models/document"
 	"zoc/src/internal/storage"
@@ -97,7 +98,7 @@ func createRichTextDocument(w http.ResponseWriter, r *http.Request, req createDo
 }
 
 func createFromTemplate(w http.ResponseWriter, r *http.Request, req createDocumentRequest, userID string) {
-	tmpl, err := dbdocument.GetDocument(r.Context(), req.TemplateID)
+	tmpl, err := dbdocument.GetDocument(r.Context(), req.TemplateID, userID)
 	if err != nil {
 		utils.WriteError(w, http.StatusNotFound, "Template not found")
 		return
@@ -137,7 +138,8 @@ func ListDocumentsHandler(w http.ResponseWriter, r *http.Request) {
 		folderID = &v
 	}
 
-	list, err := dbdocument.ListDocuments(r.Context(), folderID)
+	userID, _ := r.Context().Value("user_id").(string)
+	list, err := dbdocument.ListDocuments(r.Context(), folderID, userID)
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to list documents: "+err.Error())
 		return
@@ -150,14 +152,23 @@ func ListDocumentsHandler(w http.ResponseWriter, r *http.Request) {
 
 func GetDocumentHandler(w http.ResponseWriter, r *http.Request) {
 	documentID := chi.URLParam(r, "id")
-	d, err := dbdocument.GetDocument(r.Context(), documentID)
+	userID, _ := r.Context().Value("user_id").(string)
+	d, err := dbdocument.GetDocument(r.Context(), documentID, userID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			utils.WriteError(w, http.StatusInternalServerError, "Failed to get document: "+err.Error())
+			return
+		}
+		ok, _ := shareHandlers.CanAccessDocument(r, documentID, userID)
+		if !ok {
 			utils.WriteError(w, http.StatusNotFound, "Document not found")
 			return
 		}
-		utils.WriteError(w, http.StatusInternalServerError, "Failed to get document: "+err.Error())
-		return
+		d, err = dbdocument.GetDocumentByID(r.Context(), documentID)
+		if err != nil {
+			utils.WriteError(w, http.StatusNotFound, "Document not found")
+			return
+		}
 	}
 	if userID, _ := r.Context().Value("user_id").(string); userID != "" {
 		_ = dbtag.RecordView(r.Context(), documentID, userID)
@@ -198,7 +209,8 @@ func UpdateDocumentHandler(w http.ResponseWriter, r *http.Request) {
 // requireOwner returns the document if the requester created it, otherwise
 // writes a 403 and returns nil. Used for delete/archive/share/template actions.
 func requireOwner(w http.ResponseWriter, r *http.Request, documentID string) *models.Document {
-	d, err := dbdocument.GetDocument(r.Context(), documentID)
+	userID, _ := r.Context().Value("user_id").(string)
+	d, err := dbdocument.GetDocument(r.Context(), documentID, userID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			utils.WriteError(w, http.StatusNotFound, "Document not found")
@@ -207,7 +219,6 @@ func requireOwner(w http.ResponseWriter, r *http.Request, documentID string) *mo
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to load document: "+err.Error())
 		return nil
 	}
-	userID, _ := r.Context().Value("user_id").(string)
 	if d.CreatedBy != userID {
 		utils.WriteError(w, http.StatusForbidden, "Only the document owner can perform this action")
 		return nil
@@ -220,11 +231,11 @@ func DeleteDocumentHandler(w http.ResponseWriter, r *http.Request) {
 	if requireOwner(w, r, documentID) == nil {
 		return
 	}
-	if err := dbdocument.SoftDeleteDocument(r.Context(), documentID); err != nil {
+	userID, _ := r.Context().Value("user_id").(string)
+	if err := dbdocument.SoftDeleteDocument(r.Context(), documentID, userID); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to delete document: "+err.Error())
 		return
 	}
-	userID, _ := r.Context().Value("user_id").(string)
 	_ = dbactivity.LogActivity(r.Context(), documentID, userID, "deleted", nil)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -234,13 +245,13 @@ func RestoreDocumentHandler(w http.ResponseWriter, r *http.Request) {
 	if requireOwner(w, r, documentID) == nil {
 		return
 	}
-	if err := dbdocument.RestoreDocument(r.Context(), documentID); err != nil {
+	userID, _ := r.Context().Value("user_id").(string)
+	if err := dbdocument.RestoreDocument(r.Context(), documentID, userID); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to restore document: "+err.Error())
 		return
 	}
-	userID, _ := r.Context().Value("user_id").(string)
 	_ = dbactivity.LogActivity(r.Context(), documentID, userID, "restored", nil)
-	d, err := dbdocument.GetDocument(r.Context(), documentID)
+	d, err := dbdocument.GetDocument(r.Context(), documentID, userID)
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to fetch restored document: "+err.Error())
 		return
@@ -274,7 +285,8 @@ func setArchived(w http.ResponseWriter, r *http.Request, archived bool) {
 	if requireOwner(w, r, documentID) == nil {
 		return
 	}
-	d, err := dbdocument.SetArchived(r.Context(), documentID, archived)
+	userID, _ := r.Context().Value("user_id").(string)
+	d, err := dbdocument.SetArchived(r.Context(), documentID, userID, archived)
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to update archive state: "+err.Error())
 		return
@@ -309,7 +321,8 @@ func BulkMoveDocumentsHandler(w http.ResponseWriter, r *http.Request) {
 		utils.WriteError(w, http.StatusBadRequest, "document_ids is required")
 		return
 	}
-	if err := dbdocument.BulkMoveDocuments(r.Context(), req.DocumentIDs, req.FolderID); err != nil {
+	userID, _ := r.Context().Value("user_id").(string)
+	if err := dbdocument.BulkMoveDocuments(r.Context(), req.DocumentIDs, req.FolderID, userID); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to move documents: "+err.Error())
 		return
 	}
@@ -318,7 +331,8 @@ func BulkMoveDocumentsHandler(w http.ResponseWriter, r *http.Request) {
 
 func ListDocumentVersionsHandler(w http.ResponseWriter, r *http.Request) {
 	documentID := chi.URLParam(r, "id")
-	list, err := dbdocument.ListDocumentVersions(r.Context(), documentID)
+	userID, _ := r.Context().Value("user_id").(string)
+	list, err := dbdocument.ListDocumentVersions(r.Context(), documentID, userID)
 	if err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to list versions: "+err.Error())
 		return
@@ -339,7 +353,8 @@ func RestoreVersionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	v, err := dbdocument.GetDocumentVersion(r.Context(), documentID, version)
+	userID, _ := r.Context().Value("user_id").(string)
+	v, err := dbdocument.GetDocumentVersion(r.Context(), documentID, version, userID)
 	if err != nil {
 		utils.WriteError(w, http.StatusNotFound, "Version not found")
 		return
@@ -365,7 +380,6 @@ func RestoreVersionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, _ := r.Context().Value("user_id").(string)
 	if chunksJSON, err := json.Marshal(newChunks); err == nil {
 		_, _ = dbdocument.SnapshotChunksVersion(r.Context(), documentID, chunksJSON, userID)
 	}
@@ -389,12 +403,13 @@ func DiffVersionsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a, err := dbdocument.GetDocumentVersion(r.Context(), documentID, v1)
+	userID, _ := r.Context().Value("user_id").(string)
+	a, err := dbdocument.GetDocumentVersion(r.Context(), documentID, v1, userID)
 	if err != nil {
 		utils.WriteError(w, http.StatusNotFound, "v1 not found")
 		return
 	}
-	b, err := dbdocument.GetDocumentVersion(r.Context(), documentID, v2)
+	b, err := dbdocument.GetDocumentVersion(r.Context(), documentID, v2, userID)
 	if err != nil {
 		utils.WriteError(w, http.StatusNotFound, "v2 not found")
 		return
@@ -449,7 +464,8 @@ func MarkTemplateHandler(w http.ResponseWriter, r *http.Request) {
 	if requireOwner(w, r, documentID) == nil {
 		return
 	}
-	if err := dbdocument.SetIsTemplate(r.Context(), documentID, true); err != nil {
+	userID, _ := r.Context().Value("user_id").(string)
+	if err := dbdocument.SetIsTemplate(r.Context(), documentID, true, userID); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to mark as template: "+err.Error())
 		return
 	}
@@ -461,7 +477,8 @@ func UnmarkTemplateHandler(w http.ResponseWriter, r *http.Request) {
 	if requireOwner(w, r, documentID) == nil {
 		return
 	}
-	if err := dbdocument.SetIsTemplate(r.Context(), documentID, false); err != nil {
+	userID, _ := r.Context().Value("user_id").(string)
+	if err := dbdocument.SetIsTemplate(r.Context(), documentID, false, userID); err != nil {
 		utils.WriteError(w, http.StatusInternalServerError, "Failed to unmark template: "+err.Error())
 		return
 	}

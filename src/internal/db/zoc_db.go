@@ -37,6 +37,12 @@ func InitZocDB(ctx context.Context, dbURL string) (*pgxpool.Pool, error) {
 		}
 		config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 
+		config.MaxConns = 50
+		config.MinConns = 2
+		config.MaxConnLifetime = 30 * time.Minute
+		config.MaxConnIdleTime = 5 * time.Minute
+		config.HealthCheckPeriod = 1 * time.Minute
+
 		retryErr := retryWithExponentialBackoff(ctx, 5, 1*time.Second, 30*time.Second, func() error {
 			var connErr error
 			zocPool, connErr = pgxpool.NewWithConfig(ctx, config)

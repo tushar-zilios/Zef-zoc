@@ -116,3 +116,13 @@ CREATE INDEX IF NOT EXISTS idx_document_activity_document_id ON public.document_
 -- Version snapshots for chunk-based (rich-text) docs, so restore can replay
 -- content rather than just the blob storage_key/checksum the table already tracks.
 ALTER TABLE public.zoc_document_versions ADD COLUMN IF NOT EXISTS chunks_snapshot JSONB;
+
+CREATE TABLE IF NOT EXISTS public.document_shares (
+  document_id  UUID NOT NULL REFERENCES public.documents(document_id) ON DELETE CASCADE,
+  user_id      TEXT NOT NULL,
+  permission   TEXT NOT NULL DEFAULT 'view', -- view | comment | edit
+  created_by   TEXT NOT NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (document_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_document_shares_user_id ON public.document_shares(user_id);
